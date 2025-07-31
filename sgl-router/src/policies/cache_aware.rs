@@ -63,10 +63,12 @@ use super::{get_healthy_worker_indices, CacheAwareConfig, LoadBalancingPolicy};
 use crate::core::Worker;
 use crate::metrics::RouterMetrics;
 use crate::tree::Tree;
+use rand::seq::SliceRandom;
+use rand::thread_rng;
 use std::sync::{Arc, Mutex};
 use std::thread;
 use std::time::Duration;
-use tracing::debug;
+use tracing::{debug, error, warn};
 
 /// Cache-aware routing policy
 ///
@@ -145,6 +147,10 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
         let healthy_indices = get_healthy_worker_indices(workers);
 
         if healthy_indices.is_empty() {
+            error!(
+                "[Prefill] No healthy workers found. Full list: {:?}",
+                workers.iter().map(|w| (w.url(), w.is_healthy())).collect::<Vec<_>>()
+            );
             return None;
         }
 
@@ -205,11 +211,21 @@ impl LoadBalancingPolicy for CacheAwarePolicy {
             };
 
             // Find the index of the selected worker
-            let selected_idx = workers.iter().position(|w| w.url() == selected_url)?;
+            let selected_idx = workers.iter().position(|w| w.url() == selected_url);
+
+            if selected_url == "empty" || selected_idx.is_none() {
+                warn!(
+                    "select_worker: selected_url = '{}', not found in current workers. Fallback to random healthy worker.",
+                    selected_url,
+                );
+                return healthy_indices.choose(&mut thread_rng()).copied();
+            }
+
+            let selected_idx = selected_idx.unwrap(); // safe unwrap after the check above
 
             // Only proceed if the worker is healthy
             if !workers[selected_idx].is_healthy() {
-                return healthy_indices.first().copied();
+                return healthy_indices.choose(&mut thread_rng()).copied();
             }
 
             // Update the tree with this request
